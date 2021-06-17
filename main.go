@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/costexplorer"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"time"
@@ -24,39 +25,7 @@ func timeSpan() (string, string) {
 	return ThreeDaysAgo, twoDaysAgo
 }
 
-var (
-	awsDailyUnblendedCosts float64
-	billingDate            string
-)
-
-type myCollector struct {
-	metric *prometheus.Desc
-}
-
-func (c *myCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.metric
-}
-
-func (c *myCollector) Collect(ch chan<- prometheus.Metric) {
-
-	t, _ := time.Parse("2006-01-02", billingDate)
-	s := prometheus.NewMetricWithTimestamp(t, prometheus.MustNewConstMetric(c.metric, prometheus.GaugeValue, awsDailyUnblendedCosts))
-
-	ch <- s
-}
-
-func main() {
-
-	collector := &myCollector{
-		metric: prometheus.NewDesc(
-			"daily_unblended_costs",
-			"AWS Daily unbleded costs",
-			nil,
-			nil,
-		),
-	}
-	prometheus.MustRegister(collector)
-
+func recordMetrics() {
 	go func() {
 		for {
 			sess, _ := session.NewSession()
@@ -83,12 +52,24 @@ func main() {
 			if err != nil {
 				fmt.Println(err)
 			}
-			billingDate = *resp.ResultsByTime[0].TimePeriod.Start
-			awsDailyUnblendedCosts, _ = strconv.ParseFloat(*resp.ResultsByTime[0].Total["UnblendedCost"].Amount, 64)
+			awsCosts, _ := strconv.ParseFloat(*resp.ResultsByTime[0].Total["UnblendedCost"].Amount, 64)
+			opsAwsCosts.Set(awsCosts)
 
 			time.Sleep(4 * 3600 * time.Second)
 		}
 	}()
+}
+
+var (
+	opsAwsCosts = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "daily_unblended_costs",
+		Help: "AWS Daily unbleded costs",
+	})
+)
+
+func main() {
+
+	recordMetrics()
 
 	http.Handle("/metrics", promhttp.Handler())
 	log.Fatal(http.ListenAndServe(":5000", nil))
